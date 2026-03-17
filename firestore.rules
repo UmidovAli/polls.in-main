@@ -1,0 +1,159 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - email: string (required)
+    //   - display_name: string (required)
+    //   - avatar_url: string (optional)
+    //   - role: string (required, 'admin', 'superuser', 'user')
+    //   - created_at: timestamp (required)
+    //   - last_login: timestamp (optional)
+    //
+    // Collection: polls
+    // Document ID: {pollId}
+    // Fields:
+    //   - creator_id: string (required)
+    //   - title: string (required)
+    //   - description: string (optional)
+    //   - status: string (required, 'active', 'closed')
+    //   - starts_at: timestamp (optional)
+    //   - ends_at: timestamp (required)
+    //   - is_anonymous: boolean (required)
+    //   - multiple_choice: boolean (required)
+    //   - created_at: timestamp (required)
+    //   - options: list of objects { id: string, text: string } (required)
+    //
+    // Collection: polls/{pollId}/votes
+    // Document ID: {userId}
+    // Fields:
+    //   - user_id: string (required)
+    //   - option_ids: list of strings (required)
+    //   - voted_at: timestamp (required)
+    //
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+    
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+    
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "alisher2002umidov@gmail.com" && request.auth.token.email_verified == true));
+    }
+    
+    function isSuperuser() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'superuser'] ||
+          (request.auth.token.email == "alisher2002umidov@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    
+    function isValidUser(data) {
+      return hasOnlyAllowedFields(['email', 'display_name', 'avatar_url', 'role', 'created_at', 'last_login']) &&
+             data.email is string && isValidEmail(data.email) &&
+             data.display_name is string && data.display_name.size() > 0 && data.display_name.size() < 100 &&
+             (!('avatar_url' in data) || (data.avatar_url is string && data.avatar_url.size() < 500)) &&
+             data.role in ['admin', 'superuser', 'user'] &&
+             data.created_at is timestamp &&
+             (!('last_login' in data) || data.last_login is timestamp);
+    }
+    
+    function isValidPoll(data) {
+      return hasOnlyAllowedFields(['creator_id', 'title', 'description', 'status', 'starts_at', 'ends_at', 'is_anonymous', 'multiple_choice', 'created_at', 'options']) &&
+             data.creator_id is string &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+             (!('description' in data) || (data.description is string && data.description.size() < 2000)) &&
+             data.status in ['active', 'closed'] &&
+             (!('starts_at' in data) || data.starts_at is timestamp) &&
+             data.ends_at is timestamp &&
+             data.is_anonymous is bool &&
+             data.multiple_choice is bool &&
+             data.created_at is timestamp &&
+             data.options is list && data.options.size() > 0 && data.options.size() <= 100;
+    }
+    
+    function isValidVote(data) {
+      return hasOnlyAllowedFields(['user_id', 'option_ids', 'voted_at']) &&
+             data.user_id is string &&
+             data.option_ids is list && data.option_ids.size() > 0 && data.option_ids.size() <= 100 &&
+             data.voted_at is timestamp;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      // Anyone authenticated can read user profiles (needed for displaying poll creators, etc.)
+      allow read: if isAuthenticated();
+      
+      // Users can create their own profile, but cannot assign themselves 'admin' or 'superuser' unless they are the default admin
+      allow create: if isOwner(userId) && isValidUser(request.resource.data) && 
+                    (request.resource.data.role == 'user' || isAdmin());
+                    
+      // Users can update their own profile, but cannot change their role. Admins can update any profile.
+      allow update: if isAuthenticated() && isValidUser(request.resource.data) && 
+                    ((isOwner(userId) && request.resource.data.role == resource.data.role) || isAdmin());
+                    
+      allow delete: if isAdmin();
+    }
+
+    match /polls/{pollId} {
+      // Anyone authenticated can read polls
+      allow read: if isAuthenticated();
+      
+      // Only superusers and admins can create polls
+      allow create: if isSuperuser() && isValidPoll(request.resource.data) && request.resource.data.creator_id == request.auth.uid;
+      
+      // Only the creator or an admin can update a poll
+      allow update: if isAuthenticated() && isValidPoll(request.resource.data) && 
+                    (resource.data.creator_id == request.auth.uid || isAdmin());
+                    
+      // Only the creator or an admin can delete a poll
+      allow delete: if isAuthenticated() && (resource.data.creator_id == request.auth.uid || isAdmin());
+      
+      match /votes/{voteId} {
+        // Users can read votes to aggregate results
+        allow read: if isAuthenticated();
+        
+        // Users can create a vote if they are the owner, the poll is active, and the poll hasn't ended
+        allow create: if isOwner(voteId) && isValidVote(request.resource.data) &&
+                      request.resource.data.user_id == request.auth.uid &&
+                      get(/databases/$(database)/documents/polls/$(pollId)).data.status == 'active' &&
+                      get(/databases/$(database)/documents/polls/$(pollId)).data.ends_at > request.time;
+                      
+        // Votes cannot be updated or deleted once cast
+        allow update, delete: if false;
+      }
+    }
+  }
+}

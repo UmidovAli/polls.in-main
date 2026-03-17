@@ -1,0 +1,74 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "A user of the application",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email" },
+        "display_name": { "type": "string" },
+        "avatar_url": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "superuser", "user"] },
+        "created_at": { "type": "string", "format": "date-time" },
+        "last_login": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "display_name", "role", "created_at"]
+    },
+    "Poll": {
+      "title": "Poll",
+      "description": "A poll created by an admin or superuser",
+      "type": "object",
+      "properties": {
+        "creator_id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "closed"] },
+        "starts_at": { "type": "string", "format": "date-time" },
+        "ends_at": { "type": "string", "format": "date-time" },
+        "is_anonymous": { "type": "boolean" },
+        "multiple_choice": { "type": "boolean" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "text": { "type": "string" }
+            },
+            "required": ["id", "text"]
+          }
+        }
+      },
+      "required": ["creator_id", "title", "status", "ends_at", "is_anonymous", "multiple_choice", "created_at", "options"]
+    },
+    "Vote": {
+      "title": "Vote",
+      "description": "A user's vote on a poll",
+      "type": "object",
+      "properties": {
+        "user_id": { "type": "string" },
+        "option_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "voted_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["user_id", "option_ids", "voted_at"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Stores user profiles"
+    },
+    "/polls/{pollId}": {
+      "schema": { "$ref": "#/entities/Poll" },
+      "description": "Stores polls"
+    },
+    "/polls/{pollId}/votes/{userId}": {
+      "schema": { "$ref": "#/entities/Vote" },
+      "description": "Stores votes for a poll, keyed by user ID to prevent duplicate votes"
+    }
+  }
+}
